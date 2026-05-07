@@ -968,28 +968,29 @@ if mode == "Single / Multi lead":
             all_results = []
             total_jobs = len(url_brand_pairs) * len(poc_list)
             job = 0
+            job_slice = 90 / max(total_jobs, 1)
 
             for url, brand in url_brand_pairs:
                 for poc in poc_list:
                     job += 1
-                    pct_base = int(((job - 1) / total_jobs) * 90)
+                    pct_base = ((job - 1) / total_jobs) * 90
 
                     with pipeline_ph:
                         render_pipeline(1)
-                    prog.progress(pct_base + 5)
+                    prog.progress(min(int(pct_base + job_slice * 0.10), 99))
                     status.info(f"[{job}/{total_jobs}] Scanning {brand} for {poc.get('name') or 'contact'}...")
 
                     with pipeline_ph:
                         render_pipeline(2)
-                    prog.progress(pct_base + 20)
+                    prog.progress(min(int(pct_base + job_slice * 0.30), 99))
 
                     with pipeline_ph:
                         render_pipeline(3)
-                    prog.progress(pct_base + 50)
+                    prog.progress(min(int(pct_base + job_slice * 0.65), 99))
 
                     with pipeline_ph:
                         render_pipeline(4)
-                    prog.progress(pct_base + 80)
+                    prog.progress(min(int(pct_base + job_slice * 0.90), 99))
 
                     result = run_pipeline_for_brand(
                         url, brand,
@@ -1010,7 +1011,6 @@ if mode == "Single / Multi lead":
             if len(all_results) == 1:
                 render_result(all_results[0])
             else:
-                # Tab per result: "Brand — Person"
                 tab_labels = [f"{r['brand']} — {r['poc']['name'] or 'N/A'}" for r in all_results]
                 result_tabs = st.tabs(tab_labels)
                 for tab, result in zip(result_tabs, all_results):
@@ -1057,28 +1057,29 @@ else:
             prog = st.progress(0)
             status = st.empty()
 
+            row_slice = 90 / max(len(rows), 1)
             for i, row in enumerate(rows):
                 brand = row.get("brand_name") or urlparse(row.get("url", "")).netloc.replace("www.", "").split(".")[0].title()
                 status.info(f"Processing {i + 1}/{len(rows)}: **{brand}**")
-                step_base = int((i / len(rows)) * 90)
+                step_base = (i / len(rows)) * 90
 
                 with pipeline_ph: render_pipeline(1)
-                prog.progress(step_base + 3)
+                prog.progress(min(int(step_base + row_slice * 0.10), 99))
                 protection = scan_protection_apps(row.get("url", ""))
 
                 with pipeline_ph: render_pipeline(2)
-                prog.progress(step_base + 10)
+                prog.progress(min(int(step_base + row_slice * 0.35), 99))
                 metrics = estimate_metrics(row.get("url", ""), brand)
                 uplift = calculate_revenue_uplift(metrics)
 
                 with pipeline_ph: render_pipeline(3)
-                prog.progress(step_base + 18)
+                prog.progress(min(int(step_base + row_slice * 0.65), 99))
                 copy_a = get_copy(brand, row.get("poc_name", ""), row.get("poc_title", ""), protection, metrics, "A")
                 copy_b = get_copy(brand, row.get("poc_name", ""), row.get("poc_title", ""), protection, metrics, "B")
                 copy_c = get_uplift_copy(brand, row.get("poc_name", ""), uplift)
 
                 with pipeline_ph: render_pipeline(4)
-                prog.progress(step_base + 24)
+                prog.progress(min(int(step_base + row_slice * 0.90), 99))
                 contact = get_contact_suggestion(row.get("poc_title", ""), brand)
 
                 results.append({
