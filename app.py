@@ -141,111 +141,50 @@ def extract_brand_name(url: str) -> str:
     return host.replace("-", " ").replace("_", " ").title()
 
 
-# ── Feature 2: Decision maker suggestion — Google → LinkedIn ────
-def find_decision_makers(brand_name: str) -> list:
+# ── Feature 2: Decision maker search links (no scraping needed) ──
+def get_decision_maker_links(brand_name: str) -> list:
     """
-    Token-free: Google search for founder/CEO LinkedIn profiles.
-    Parses result page HTML for LinkedIn URLs + names. Returns up to 3.
+    Generate clickable LinkedIn People Search URLs for common decision-maker roles.
+    Zero HTTP requests — LinkedIn search URLs are constructed client-side.
+    The user clicks to open in their browser where they're already logged in.
     """
-    results = []
+    from urllib.parse import urlencode
+    brand_q = brand_name.strip()
+    roles = [
+        ("Founder / Co-Founder", f"{brand_q} founder OR co-founder",
+         "Final call on new revenue partnerships"),
+        ("CEO / COO", f"{brand_q} CEO OR COO",
+         "Direct authority on strategic partnerships"),
+        ("Head of Ecommerce / Operations", f"{brand_q} head ecommerce OR head operations",
+         "Owns the post-purchase tech stack"),
+        ("VP / Head of Growth", f"{brand_q} VP growth OR head of growth",
+         "Revenue-minded — GMV angle resonates strongly"),
+    ]
+    links = []
+    for label, keywords, reason in roles:
+        url = "https://www.linkedin.com/search/results/people/?" + urlencode({"keywords": keywords})
+        links.append({"label": label, "url": url, "reason": reason})
+    return links
+
+
+# ── Feature 3: Extract name from LinkedIn URL slug (no HTTP needed) ─
+def extract_name_from_linkedin_url(linkedin_url: str) -> str:
+    """
+    Derives an approximate name from a LinkedIn profile URL slug.
+    e.g. linkedin.com/in/eric-bandholz → 'Eric Bandholz'
+    Zero HTTP requests — LinkedIn blocks all automated access (HTTP 999).
+    """
+    if not linkedin_url or "linkedin.com/in/" not in linkedin_url:
+        return ""
     try:
-        query = f'"{brand_name}" (founder OR "co-founder" OR CEO OR "head of ecommerce") site:linkedin.com/in'
-        r = requests.get(
-            f"https://www.google.com/search?q={requests.utils.quote(query)}&num=6",
-            headers=HEADERS, timeout=10,
-        )
-        # Extract LinkedIn slugs from raw HTML
-        li_matches = re.findall(
-            r'linkedin\.com/in/([a-zA-Z0-9\-]{3,60})(?:[&"/ ])',
-            r.text,
-        )
-        seen = set()
-        soup = BeautifulSoup(r.text, "lxml")
-
-        for slug in li_matches:
-            if slug in seen or slug in {"company", "pub", "in", "jobs"}:
-                continue
-            seen.add(slug)
-            li_url = f"https://www.linkedin.com/in/{slug}"
-
-            # Try to find the title element near this link in the DOM
-            name, title = "", ""
-            for a in soup.find_all("a", href=re.compile(re.escape(slug))):
-                parent = a.find_parent("div")
-                if parent:
-                    h3 = parent.find("h3")
-                    if h3:
-                        raw = re.sub(r'\s*\|\s*LinkedIn\s*$', '', h3.text, flags=re.I).strip()
-                        if " - " in raw:
-                            parts = raw.split(" - ", 1)
-                            name, title = parts[0].strip(), parts[1].strip()
-                        else:
-                            name = raw
-                        break
-
-            if not name:
-                name = slug.replace("-", " ").title()
-
-            results.append({"name": name, "title": title, "linkedin_url": li_url})
-            if len(results) >= 3:
-                break
-
+        slug = linkedin_url.rstrip("/").split("/in/")[-1].split("?")[0]
+        # Strip trailing hex IDs like -a1b2c3
+        slug = re.sub(r'-[a-f0-9]{5,}$', '', slug)
+        parts = [w.capitalize() for w in slug.split("-") if w and not w.isdigit()]
+        name = " ".join(parts)
+        return name if len(name) > 2 else ""
     except Exception:
-        pass
-    return results
-
-
-# ── Feature 3: LinkedIn public profile extractor ─────────────────
-def extract_linkedin_info(linkedin_url: str) -> dict:
-    """
-    Token-free: parse OG meta tags from public LinkedIn profile.
-    Returns name, title, summary. No login required for public profiles.
-    """
-    result = {"name": "", "title": "", "summary": "", "email": "", "error": None}
-    if not linkedin_url or "linkedin.com" not in linkedin_url:
-        result["error"] = "Not a LinkedIn URL"
-        return result
-    try:
-        r = requests.get(linkedin_url, headers=HEADERS, timeout=12, allow_redirects=True)
-        if r.status_code != 200:
-            result["error"] = f"HTTP {r.status_code}"
-            return result
-        soup = BeautifulSoup(r.text, "lxml")
-
-        # og:title → "Name - Title | LinkedIn"
-        og_title = soup.find("meta", property="og:title")
-        if og_title and og_title.get("content"):
-            raw = re.sub(r'\s*\|\s*LinkedIn\s*$', '', og_title["content"], flags=re.I).strip()
-            if " - " in raw:
-                parts = raw.split(" - ", 1)
-                result["name"] = parts[0].strip()
-                result["title"] = parts[1].strip()
-            else:
-                result["name"] = raw
-
-        # og:description → headline / summary
-        og_desc = soup.find("meta", property="og:description")
-        if og_desc and og_desc.get("content"):
-            result["summary"] = og_desc["content"][:180].strip()
-
-        # Fallback: extract title from summary first sentence
-        if not result["title"] and result["summary"]:
-            first = result["summary"].split(".")[0].strip()
-            if len(first) < 100:
-                result["title"] = first
-
-        # Email: sometimes visible on public profiles
-        email_pat = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
-        found_emails = email_pat.findall(r.text)
-        public = [e for e in found_emails if not any(
-            x in e.lower() for x in ["linkedin", "example", "sentry", "w3.org", "schema"]
-        )]
-        if public:
-            result["email"] = public[0]
-
-    except Exception as e:
-        result["error"] = str(e)[:80]
-    return result
+        return ""
 
 
 # ── Core scanner functions ────────────────────────────────────────
@@ -745,6 +684,10 @@ def init_state():
         st.session_state.poc_rows = [{"name": "", "title": "", "linkedin": "", "email": ""}]
     if "dm_suggestions" not in st.session_state:
         st.session_state.dm_suggestions = {}
+    if "results" not in st.session_state:
+        st.session_state.results = []
+    if "batch_results" not in st.session_state:
+        st.session_state.batch_results = []
 
 init_state()
 
@@ -860,33 +803,26 @@ if mode == "Single / Multi lead":
 
             btn_col1, btn_col2, btn_col3 = st.columns([1.5, 1.5, 3])
             with btn_col1:
-                # Feature 3: Fetch from LinkedIn
-                if st.button("🔍 Fetch from LinkedIn", key=f"fetch_li_{i}", help="Extract name + title from public LinkedIn profile"):
+                # Feature 3: Extract name from LinkedIn URL slug
+                if st.button("📋 Fill name from URL", key=f"fetch_li_{i}", help="Derives name from the LinkedIn URL — no login needed"):
                     li_url = poc["linkedin"].strip()
                     if li_url:
-                        with st.spinner("Fetching LinkedIn profile..."):
-                            info = extract_linkedin_info(li_url)
-                        if info.get("error"):
-                            st.warning(f"Could not fetch profile: {info['error']}")
-                        else:
-                            if info["name"] and not poc["name"]:
-                                st.session_state.poc_rows[i]["name"] = info["name"]
-                            if info["title"] and not poc["title"]:
-                                st.session_state.poc_rows[i]["title"] = info["title"]
-                            if info["email"] and not poc["email"]:
-                                st.session_state.poc_rows[i]["email"] = info["email"]
-                            st.success(f"Fetched: {info['name']} — {info['title'][:50]}")
+                        guessed = extract_name_from_linkedin_url(li_url)
+                        if guessed and not poc["name"]:
+                            st.session_state.poc_rows[i]["name"] = guessed
                             st.rerun()
+                        elif guessed:
+                            st.info(f"Detected: **{guessed}** (name field already filled)")
+                        else:
+                            st.warning("Couldn't parse name from URL — please enter manually.")
                     else:
-                        st.warning("Enter a LinkedIn URL first")
+                        st.warning("Paste a LinkedIn URL first.")
 
             with btn_col2:
-                # Feature 2: Suggest decision makers
+                # Feature 2: Open LinkedIn search links in browser
                 primary_brand = st.session_state.url_rows[0]["brand"].strip() or "this brand"
-                if st.button("💡 Find decision maker", key=f"find_dm_{i}", help="Google search for Founder/CEO on LinkedIn"):
-                    with st.spinner(f"Searching LinkedIn for {primary_brand} decision makers..."):
-                        suggestions = find_decision_makers(primary_brand)
-                    st.session_state.dm_suggestions[i] = suggestions
+                if st.button("🔗 Search LinkedIn", key=f"find_dm_{i}", help="Open LinkedIn People Search for this brand"):
+                    st.session_state.dm_suggestions[i] = get_decision_maker_links(primary_brand)
                     st.rerun()
 
             with btn_col3:
@@ -896,24 +832,17 @@ if mode == "Single / Multi lead":
                         del st.session_state.dm_suggestions[i]
                     st.rerun()
 
-            # Show DM suggestions inline
+            # Show LinkedIn search links inline
             if i in st.session_state.dm_suggestions:
-                sug = st.session_state.dm_suggestions[i]
-                if sug:
-                    st.markdown("**Suggested decision makers:**")
-                    for dm in sug:
-                        col_dm1, col_dm2 = st.columns([3, 1])
-                        with col_dm1:
-                            st.markdown(f'<div class="dm-suggestion"><div class="dm-name">{dm["name"]}</div><div class="dm-title">{dm["title"] or "Title not available"}</div></div>', unsafe_allow_html=True)
-                        with col_dm2:
-                            if st.button("Use this", key=f"use_dm_{i}_{dm['name'][:10]}"):
-                                st.session_state.poc_rows[i]["name"] = dm["name"]
-                                st.session_state.poc_rows[i]["title"] = dm["title"]
-                                st.session_state.poc_rows[i]["linkedin"] = dm["linkedin_url"]
-                                del st.session_state.dm_suggestions[i]
-                                st.rerun()
-                else:
-                    st.info("No LinkedIn results found. Try a more specific brand name.")
+                links = st.session_state.dm_suggestions[i]
+                if links:
+                    st.markdown("**Click to search LinkedIn (opens in browser):**")
+                    for lnk in links:
+                        st.markdown(
+                            f'🔍 **[{lnk["label"]}]({lnk["url"]})** — {lnk["reason"]}',
+                            unsafe_allow_html=False
+                        )
+                    st.caption("Copy the name + title from LinkedIn, paste above, then run the pipeline.")
 
         st.session_state.poc_rows[i] = poc
 
@@ -1004,26 +933,37 @@ if mode == "Single / Multi lead":
             status.success(f"Complete — {len(all_results)} result{'s' if len(all_results) > 1 else ''} ready.")
             pipeline_ph.empty()
             time.sleep(0.3)
+            st.session_state.results = all_results
 
-            st.markdown("---")
-            st.markdown(f"### Results ({len(all_results)})")
+    # ── Render results (persists across radio-button reruns) ──────
+    if st.session_state.results:
+        all_results = st.session_state.results
+        st.markdown("---")
+        st.markdown(f"### Results ({len(all_results)})")
 
-            if len(all_results) == 1:
-                render_result(all_results[0])
-            else:
-                tab_labels = [f"{r['brand']} — {r['poc']['name'] or 'N/A'}" for r in all_results]
-                result_tabs = st.tabs(tab_labels)
-                for tab, result in zip(result_tabs, all_results):
-                    with tab:
-                        render_result(result, key_suffix=f"{result['brand']}_{result['poc']['name']}")
+        if len(all_results) == 1:
+            render_result(all_results[0])
+        else:
+            tab_labels = [f"{r['brand']} — {r['poc']['name'] or 'N/A'}" for r in all_results]
+            result_tabs = st.tabs(tab_labels)
+            for tab, result in zip(result_tabs, all_results):
+                with tab:
+                    render_result(result, key_suffix=f"{result['brand']}_{result['poc']['name']}")
 
-            csv_data = results_to_csv(all_results)
+        csv_data = results_to_csv(all_results)
+        col_dl, col_clr = st.columns([3, 1])
+        with col_dl:
             st.download_button(
                 "⬇ Download results CSV",
                 data=csv_data,
                 file_name=f"parcelis_results_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv",
+                use_container_width=True,
             )
+        with col_clr:
+            if st.button("✕ Clear results", use_container_width=True):
+                st.session_state.results = []
+                st.rerun()
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1095,31 +1035,41 @@ else:
             status.success(f"Batch complete — {len(results)} leads processed.")
             pipeline_ph.empty()
             time.sleep(0.4)
+            st.session_state.batch_results = results
 
-            no_protection = [r for r in results if not r["protection"]["found"]]
-            viable_uplift = [r for r in results if r.get("uplift", {}).get("viable")]
-            ideal_contacts = [r for r in results if r["contact"]["priority"] == 1]
+    # ── Render batch results (persists across radio-button reruns) ─
+    if st.session_state.batch_results:
+        results = st.session_state.batch_results
+        no_protection = [r for r in results if not r["protection"]["found"]]
+        viable_uplift = [r for r in results if r.get("uplift", {}).get("viable")]
+        ideal_contacts = [r for r in results if r["contact"]["priority"] == 1]
 
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Total leads", len(results))
-            m2.metric("Unprotected", len(no_protection))
-            m3.metric("Uplift viable", len(viable_uplift))
-            m4.metric("Ideal contact", len(ideal_contacts))
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total leads", len(results))
+        m2.metric("Unprotected", len(no_protection))
+        m3.metric("Uplift viable", len(viable_uplift))
+        m4.metric("Ideal contact", len(ideal_contacts))
 
-            viable = [(r, r["uplift"]) for r in results if r.get("uplift", {}).get("annual_uplift")]
-            if viable:
-                viable.sort(key=lambda x: x[1]["annual_uplift"], reverse=True)
-                st.markdown("#### Top revenue uplift opportunities")
-                for rank, (r, u) in enumerate(viable[:3], 1):
-                    st.markdown(f"**{rank}. {r['brand']}** — {u['annual_uplift_formatted']}/yr · {u['pct_lift_display']} GMV lift")
+        viable = [(r, r["uplift"]) for r in results if r.get("uplift", {}).get("annual_uplift")]
+        if viable:
+            viable.sort(key=lambda x: x[1]["annual_uplift"], reverse=True)
+            st.markdown("#### Top revenue uplift opportunities")
+            for rank, (r, u) in enumerate(viable[:3], 1):
+                st.markdown(f"**{rank}. {r['brand']}** — {u['annual_uplift_formatted']}/yr · {u['pct_lift_display']} GMV lift")
 
-            st.markdown("### Results")
-            result_tabs = st.tabs([r["brand"] for r in results])
-            for tab, result in zip(result_tabs, results):
-                with tab:
-                    render_result(result, key_suffix=result["brand"])
+        st.markdown("### Results")
+        result_tabs = st.tabs([r["brand"] for r in results])
+        for tab, result in zip(result_tabs, results):
+            with tab:
+                render_result(result, key_suffix=result["brand"])
 
-            csv_out = results_to_csv(results)
+        csv_out = results_to_csv(results)
+        col_dl2, col_clr2 = st.columns([3, 1])
+        with col_dl2:
             st.download_button("⬇ Download full results CSV", data=csv_out,
                                file_name=f"parcelis_batch_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                                mime="text/csv", use_container_width=True)
+        with col_clr2:
+            if st.button("✕ Clear results", key="clr_batch", use_container_width=True):
+                st.session_state.batch_results = []
+                st.rerun()
